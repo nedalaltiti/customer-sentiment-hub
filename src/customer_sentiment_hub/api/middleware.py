@@ -2,22 +2,27 @@
 Middleware components for the Customer Sentiment Hub API.
 
 This module contains middleware functions that process requests and responses,
-handling cross-cutting concerns such as authentication, logging, rate limiting,
-CORS, and error handling.
+handling cross-cutting concerns such as request tracking, logging, security,
+and performance monitoring.
 """
 
 import time
 import uuid
 import logging
-from fastapi import Request, Response
+from typing import Callable, Dict, List, Optional, Type
+
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from typing import Callable, Dict, List, Optional
-import jwt
-from datetime import datetime, timedelta
+
+try:
+    import jwt
+    JWT_AVAILABLE = True
+except ImportError:
+    JWT_AVAILABLE = False
 
 from customer_sentiment_hub.config.settings import settings
 from customer_sentiment_hub.api.models import ErrorResponse
@@ -29,26 +34,34 @@ logger = logging.getLogger("customer_sentiment_hub")
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
     """
-    Middleware that adds a unique request ID to each request.
+    Adds a unique request ID to each request.
     
-    This helps with tracing requests across the system and debugging.
+    Benefits:
+    - Allows tracing a request through the entire system
+    - Helps with debugging by correlating logs across services
+    - Useful for troubleshooting client-reported issues
     """
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         request_id = str(uuid.uuid4())
-        # Add request ID to request state for access in route handlers
         request.state.request_id = request_id
-        # Add request ID as a header to the response
+        
+        # Process the request
         response = await call_next(request)
+        
+        # Add request ID as a header to the response
         response.headers["X-Request-ID"] = request_id
         return response
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
     """
-    Middleware that logs incoming requests and outgoing responses.
+    Logs incoming requests and outgoing responses with timing information.
     
-    Captures timing information and request details for monitoring and debugging.
+    Benefits:
+    - Provides visibility into API usage patterns
+    - Helps identify slow endpoints for optimization
+    - Facilitates debugging and performance monitoring
     """
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
@@ -56,10 +69,12 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         
         # Extract client information safely
         client_host = request.client.host if request.client else "unknown"
+        request_id = getattr(request.state, "request_id", "unknown")
         
         # Log the request
         logger.info(
-            f"Request started: {request.method} {request.url.path} from {client_host}"
+            f"Request started: {request.method} {request.url.path} "
+            f"from {client_host} [request_id: {request_id}]"
         )
         
         try:
@@ -72,17 +87,19 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             # Log the response
             logger.info(
                 f"Request completed: {request.method} {request.url.path} "
-                f"- Status: {response.status_code} - Time: {process_time:.4f}s"
+                f"- Status: {response.status_code} - Time: {process_time:.4f}s "
+                f"[request_id: {request_id}]"
             )
             
             # Add processing time header
-            response.headers["X-Process-Time"] = str(process_time)
+            response.headers["X-Process-Time"] = f"{process_time:.4f}"
             
             return response
         except Exception as e:
             # Log the exception
             logger.exception(
-                f"Request failed: {request.method} {request.url.path} - Error: {str(e)}"
+                f"Request failed: {request.method} {request.url.path} "
+                f"- Error: {str(e)} [request_id: {request_id}]"
             )
             # Re-raise to let it be handled by the exception handlers
             raise
@@ -90,18 +107,33 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
 class RateLimitingMiddleware(BaseHTTPMiddleware):
     """
-    Middleware that implements rate limiting for API requests.
+    Implements rate limiting to prevent API abuse.
     
-    Prevents abuse by limiting the number of requests per client.
+    Benefits:
+    - Protects against DoS attacks
+    - Ensures fair resource sharing among clients
+    - Helps maintain service stability under high load
     """
     
-    def __init__(self, app, requests_limit: int = 100, window_seconds: int = 60):
+    def __init__(
+        self, 
+        app, 
+        requests_limit: int = 100, 
+        window_seconds: int = 60,
+        excluded_paths: List[str] = None
+    ):
+        """Initialize with configurable limits and exclusions."""
         super().__init__(app)
         self.requests_limit = requests_limit
         self.window_seconds = window_seconds
+        self.excluded_paths = excluded_paths or ["/docs", "/redoc", "/openapi.json", "/health"]
         self.clients: Dict[str, List[float]] = {}
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Skip rate limiting for excluded paths
+        if any(request.url.path.startswith(path) for path in self.excluded_paths):
+            return await call_next(request)
+            
         # Get client IP address
         client_ip = request.client.host if request.client else "unknown"
         
@@ -128,7 +160,7 @@ class RateLimitingMiddleware(BaseHTTPMiddleware):
             )
             return JSONResponse(
                 status_code=429,
-                content=error_response.dict()
+                content=error_response.model_dump()  
             )
         
         # Add current request timestamp
@@ -148,9 +180,12 @@ class RateLimitingMiddleware(BaseHTTPMiddleware):
 
 class APIKeyAuthMiddleware(BaseHTTPMiddleware):
     """
-    Middleware that implements API key authentication.
+    Implements API key authentication.
     
-    Validates API keys included in request headers.
+    Benefits:
+    - Simple authentication mechanism for API clients
+    - Easier to implement than OAuth or JWT
+    - Good for internal or trusted partner integrations
     """
     
     def __init__(self, app, api_key_header: str = "X-API-Key", excluded_paths: List[str] = None):
@@ -175,7 +210,7 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
             )
             return JSONResponse(
                 status_code=401,
-                content=error_response.dict()
+                content=error_response.model_dump()  
             )
         
         # Process the request
@@ -185,18 +220,27 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
         """
         Validate the provided API key against the configured valid keys.
         
-        In a production environment, this would typically check against a database.
+        This uses a simple list check, but could be extended to use a database
+        or more sophisticated validation in production.
         """
-        # For demonstration, we'll check against a list of valid keys in settings
-        valid_keys = settings.security.api_keys
-        return api_key in valid_keys
+        try:
+            valid_keys = settings.security.api_keys
+            return api_key in valid_keys
+        except AttributeError:
+            logger.warning("API key validation attempted but no valid keys configured")
+            return False
 
 
 class JWTAuthMiddleware(BaseHTTPMiddleware):
     """
-    Middleware that implements JWT-based authentication.
+    Implements JWT-based authentication.
     
-    Validates JWT tokens included in request headers.
+    Benefits:
+    - Stateless authentication (no server-side storage needed)
+    - Can contain user information and permissions
+    - Supports token expiration for better security
+    
+    Note: Requires the PyJWT package to be installed
     """
     
     def __init__(
@@ -207,11 +251,19 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         token_header: str = "Authorization",
         excluded_paths: List[str] = None
     ):
+        if not JWT_AVAILABLE:
+            raise ImportError(
+                "JWT authentication requires the PyJWT package. "
+                "Install it with: pip install pyjwt"
+            )
+            
         super().__init__(app)
         self.secret_key = secret_key
         self.algorithm = algorithm
         self.token_header = token_header
-        self.excluded_paths = excluded_paths or ["/docs", "/redoc", "/openapi.json", "/health", "/auth/token"]
+        self.excluded_paths = excluded_paths or [
+            "/docs", "/redoc", "/openapi.json", "/health", "/auth/token"
+        ]
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # Skip authentication for excluded paths
@@ -230,7 +282,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             )
             return JSONResponse(
                 status_code=401,
-                content=error_response.dict()
+                content=error_response.model_dump()  
             )
         
         # Extract the token
@@ -250,7 +302,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             )
             return JSONResponse(
                 status_code=401,
-                content=error_response.dict()
+                content=error_response.model_dump()  
             )
         except jwt.InvalidTokenError:
             error_response = ErrorResponse(
@@ -260,63 +312,147 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             )
             return JSONResponse(
                 status_code=401,
-                content=error_response.dict()
+                content=error_response.model_dump()  
             )
         
         # Process the request
         return await call_next(request)
 
 
-def setup_middlewares(app):
+def create_middleware_config(settings):
+    """
+    Create middleware configuration based on settings.
+    
+    This function centralizes the logic for determining which middleware
+    to enable based on application settings.
+    
+    Returns:
+        dict: Configuration for each middleware type
+    """
+    config = {
+        "use_request_id": True,  # Always enabled
+        "use_logging": True,     # Always enabled
+        "use_gzip": True,        # Always enabled
+        "use_rate_limiting": False,
+        "use_api_key_auth": False,
+        "use_jwt_auth": False,
+        "cors": {
+            "allow_origins": ["*"],
+            "allow_credentials": True,
+            "allow_methods": ["*"],
+            "allow_headers": ["*"],
+            "max_age": 600
+        },
+        "trusted_hosts": None,
+    }
+    
+    # Try to load security settings if available
+    try:
+        if hasattr(settings, "security"):
+            # CORS settings
+            if hasattr(settings.security, "cors"):
+                config["cors"] = {
+                    "allow_origins": settings.security.cors.allow_origins,
+                    "allow_credentials": settings.security.cors.allow_credentials,
+                    "allow_methods": settings.security.cors.allow_methods,
+                    "allow_headers": settings.security.cors.allow_headers,
+                    "max_age": settings.security.cors.max_age
+                }
+            
+            # Trusted hosts
+            if hasattr(settings.security, "allowed_hosts"):
+                config["trusted_hosts"] = settings.security.allowed_hosts
+            
+            # Authentication settings
+            if hasattr(settings.security, "auth_type"):
+                if settings.security.auth_type == "api_key":
+                    config["use_api_key_auth"] = True
+                elif settings.security.auth_type == "jwt":
+                    config["use_jwt_auth"] = True
+            
+            # Rate limiting settings - only enable in production by default
+            if (hasattr(settings, "environment") and settings.environment == "production" and 
+                    hasattr(settings.security, "rate_limit")):
+                config["use_rate_limiting"] = True
+    except AttributeError as e:
+        logger.warning(f"Could not fully load security settings: {str(e)}")
+    
+    return config
+
+
+def setup_middlewares(app: FastAPI):
     """
     Configure and add all middlewares to the FastAPI application.
     
     This function centralizes middleware configuration and ensures they're
-    added in the correct order.
+    added in the correct order for proper operation.
+    
+    Args:
+        app: The FastAPI application instance
     """
+    # Get middleware configuration
+    config = create_middleware_config(settings)
+    
     # Add GZip compression
-    app.add_middleware(GZipMiddleware, minimum_size=1000)
+    if config["use_gzip"]:
+        app.add_middleware(GZipMiddleware, minimum_size=1000)
     
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.security.cors.allow_origins,
-        allow_credentials=settings.security.cors.allow_credentials,
-        allow_methods=settings.security.cors.allow_methods,
-        allow_headers=settings.security.cors.allow_headers,
-        max_age=settings.security.cors.max_age,
+        allow_origins=config["cors"]["allow_origins"],
+        allow_credentials=config["cors"]["allow_credentials"],
+        allow_methods=config["cors"]["allow_methods"],
+        allow_headers=config["cors"]["allow_headers"],
+        max_age=config["cors"]["max_age"],
     )
     
-    # Add trusted host middleware
-    app.add_middleware(
-        TrustedHostMiddleware,
-        allowed_hosts=settings.security.allowed_hosts,
-    )
-    
-    # Add custom middlewares in the correct order (outside-in)
-    app.add_middleware(RequestIdMiddleware)
-    app.add_middleware(LoggingMiddleware)
-    
-    # Only add rate limiting in production
-    if settings.environment == "production":
+    # Add trusted host middleware if configured
+    if config["trusted_hosts"]:
         app.add_middleware(
-            RateLimitingMiddleware,
-            requests_limit=settings.security.rate_limit.requests_limit,
-            window_seconds=settings.security.rate_limit.window_seconds,
+            TrustedHostMiddleware,
+            allowed_hosts=config["trusted_hosts"],
         )
     
-    # Add authentication middleware based on configuration
-    if settings.security.auth_type == "api_key":
-        app.add_middleware(
-            APIKeyAuthMiddleware,
-            api_key_header=settings.security.api_key_header,
-            excluded_paths=settings.security.auth_excluded_paths,
-        )
-    elif settings.security.auth_type == "jwt":
-        app.add_middleware(
-            JWTAuthMiddleware,
-            secret_key=settings.security.jwt_secret_key,
-            algorithm=settings.security.jwt_algorithm,
-            token_header=settings.security.jwt_header,
-            excluded_paths=settings.security.auth_excluded_paths,
-        )
+    # Add basic request tracking and logging middleware
+    if config["use_request_id"]:
+        app.add_middleware(RequestIdMiddleware)
+    
+    if config["use_logging"]:
+        app.add_middleware(LoggingMiddleware)
+    
+    # Add rate limiting middleware if enabled
+    if config["use_rate_limiting"]:
+        try:
+            app.add_middleware(
+                RateLimitingMiddleware,
+                requests_limit=settings.security.rate_limit.requests_limit,
+                window_seconds=settings.security.rate_limit.window_seconds,
+            )
+        except AttributeError:
+            logger.warning("Rate limiting enabled but configuration incomplete, using defaults")
+            app.add_middleware(RateLimitingMiddleware)
+    
+    # Add authentication middleware if enabled
+    if config["use_api_key_auth"]:
+        try:
+            app.add_middleware(
+                APIKeyAuthMiddleware,
+                api_key_header=settings.security.api_key_header,
+                excluded_paths=settings.security.auth_excluded_paths,
+            )
+        except AttributeError:
+            logger.warning("API key authentication enabled but configuration incomplete, using defaults")
+            app.add_middleware(APIKeyAuthMiddleware)
+    
+    if config["use_jwt_auth"]:
+        try:
+            app.add_middleware(
+                JWTAuthMiddleware,
+                secret_key=settings.security.jwt_secret_key,
+                algorithm=settings.security.jwt_algorithm,
+                token_header=settings.security.jwt_header,
+                excluded_paths=settings.security.auth_excluded_paths,
+            )
+        except AttributeError:
+            logger.warning("JWT authentication enabled but configuration incomplete")

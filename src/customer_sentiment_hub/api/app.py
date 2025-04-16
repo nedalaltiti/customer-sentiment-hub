@@ -9,13 +9,14 @@ import logging
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-
+from fastapi.exceptions import ResponseValidationError
 from customer_sentiment_hub.config.settings import settings
 from customer_sentiment_hub.api.middleware import setup_middlewares
 from customer_sentiment_hub.api.routes import setup_routes
 from customer_sentiment_hub.api.models import ErrorResponse
 
 import json
+from typing import Optional
 from datetime import datetime
 
 # Configure logging
@@ -116,7 +117,7 @@ def setup_exception_handlers(app: FastAPI):
         
         return JSONResponse(
             status_code=exc.status_code,
-            content=error_response.model_dump(),
+            content=error_response.model_dump(mode="json"),
             headers=exc.headers
         )
     
@@ -124,29 +125,28 @@ def setup_exception_handlers(app: FastAPI):
     async def general_exception_handler(request: Request, exc: Exception):
         """
         Handle all unhandled exceptions.
-        
+    
         Provides a generic error response while logging the actual exception.
         """
         # Log the unhandled exception
         logger.exception(f"Unhandled exception: {str(exc)}")
-        
+    
         # Create a generic error response
         error_response = ErrorResponse(
-            detail="An internal server error occurred",
-            code="INTERNAL_SERVER_ERROR",
+            detail="An internal server error occurred" if not isinstance(exc, ResponseValidationError) 
+                   else "Response validation error, please check the logs for details",
+            code="INTERNAL_SERVER_ERROR" if not isinstance(exc, ResponseValidationError)
+                   else "RESPONSE_VALIDATION_ERROR",
             path=request.url.path
         )
-        
+    
         # Convert to dictionary safely
-        if hasattr(error_response, "model_dump"):  # Pydantic v2
-            error_dict = error_response.model_dump()
-        else:  # Pydantic v1
-            error_dict = error_response.dict()
-        
+        error_dict = error_response.model_dump()
+    
         # Serialize with custom encoder to handle datetime
         error_json = json.dumps(error_dict, cls=CustomJSONEncoder)
         error_dict = json.loads(error_json)  # Convert back to dict
-        
+    
         return JSONResponse(
             status_code=500,
             content=error_dict
@@ -158,18 +158,38 @@ def setup_exception_handlers(app: FastAPI):
 app = create_app()
 
 
-def start():
-    """
-    Start the API server.
-    
-    This function is the entry point for running the application.
-    """
+def start(
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    reload: bool = False,
+    workers: int = 1,
+    log_level: Optional[str] = None
+) -> None:
+
     import uvicorn
+    
+    # Use provided values or fall back to settings
+    actual_host = host or settings.host
+    actual_port = port or settings.port
+    actual_log_level = log_level or settings.log_level.lower()
+    
+    # Configure logging if not already done
+    from customer_sentiment_hub.utils.logging import configure_logging
+    configure_logging(actual_log_level)
+    
+    # Log startup information
+    import logging
+    logger = logging.getLogger("customer_sentiment_hub.api")
+    logger.info(f"Starting API server on {actual_host}:{actual_port} (reload={reload}, workers={workers})")
+    
+    # Start the server
     uvicorn.run(
         "customer_sentiment_hub.api.app:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.environment == "development",
+        host=actual_host,
+        port=actual_port,
+        reload=reload,
+        workers=workers,
+        log_level=actual_log_level,
     )
 
 

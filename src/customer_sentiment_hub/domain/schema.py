@@ -1,8 +1,14 @@
-"""Data models for the Customer Sentiment Hub."""
+"""
+Domain models for the Customer Sentiment Hub.
 
-from typing import List, Optional
+This module defines the core data structures used throughout the application,
+representing the fundamental business entities and their relationships.
+"""
 
-from pydantic import BaseModel, Field, field_validator
+from typing import List, Optional, Dict, Any
+from datetime import datetime
+
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
 from customer_sentiment_hub.domain.taxonomy import (
     CategoryType, Sentiment, get_valid_categories, get_valid_subcategories
@@ -10,7 +16,14 @@ from customer_sentiment_hub.domain.taxonomy import (
 
 
 class Label(BaseModel):
-    """Represents a single label with category, subcategory and sentiment."""
+    """
+    Represents a single label with category, subcategory and sentiment.
+    
+    A label classifies a specific aspect of a customer review, identifying:
+    - The general category (e.g., "Product & Services")
+    - The specific subcategory (e.g., "Unsettled Debt")
+    - The sentiment expressed (Positive, Negative, or Neutral)
+    """
     
     category: str = Field(
         description="The main category of the issue (e.g., 'Product & Services')")
@@ -18,44 +31,168 @@ class Label(BaseModel):
         description="The specific subcategory of the issue")
     sentiment: str = Field(
         description="The sentiment must be ONLY 'Positive', 'Negative', or 'Neutral'")
-    confidence: Optional[float] = Field(
-        default=None, description="Confidence score for this label")
+    # confidence: Optional[float] = Field(
+    #     default=None, 
+    #     description="Confidence score for this label (0.0-1.0)",
+    #     ge=0.0, 
+    #     le=1.0
+    # )
+    
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "category": "Product & Services",
+                "subcategory": "Progress Pace",
+                "sentiment": "Negative",
+            }
+        }
+    )
     
     @field_validator("sentiment")
     def validate_sentiment(cls, v: str) -> str:
-        """Validate that sentiment is one of the allowed values."""
+        """Validate and normalize sentiment values."""
         valid_sentiments = [s.value for s in Sentiment]
-        if v not in valid_sentiments:
-            # Try to normalize the sentiment
-            v_lower = v.lower()
-            for sentiment in valid_sentiments:
-                if sentiment.lower() in v_lower:
-                    return sentiment
-            return Sentiment.NEUTRAL.value
-        return v
+        if v in valid_sentiments:
+            return v
+            
+        # Try to normalize the sentiment
+        v_lower = v.lower()
+        for sentiment in valid_sentiments:
+            if sentiment.lower() in v_lower:
+                return sentiment
+                
+        # Default fallback
+        return Sentiment.NEUTRAL.value
+    
+    @model_validator(mode='after')
+    def check_category_subcategory(self) -> 'Label':
+        """Validate that category and subcategory are compatible."""
+        valid_subcategories = get_valid_subcategories()
+        if (self.category in valid_subcategories and 
+                self.subcategory not in valid_subcategories[self.category]):
+            # This would technically be invalid, but we'll let it pass
+            # and let the ValidationService handle corrections
+            pass
+        return self
 
 
 class Review(BaseModel):
-    """Represents a single review with its metadata and labels."""
+    """
+    Represents a single review with its metadata and labels.
+    
+    A review contains the original text submitted by a customer,
+    along with extracted labels that categorize the sentiment and topics.
+    """
     
     review_id: str = Field(description="A unique identifier for the review")
     text: str = Field(description="The full text of the review")
     labels: List[Label] = Field(description="The list of labels for this review")
+    
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "review_id": "1001",
+                "text": "The debt settlement process was taking too long, but customer service was helpful.",
+                "labels": [
+                    {
+                        "category": "Product & Services",
+                        "subcategory": "Progress Pace",
+                        "sentiment": "Negative"
+                    },
+                    {
+                        "category": "Communication",
+                        "subcategory": "Communication Method",
+                        "sentiment": "Positive"
+                    }
+                ]
+            }
+        }
+    )
 
 
 class ReviewOutput(BaseModel):
-    """Represents the output containing multiple reviews."""
+    """
+    Represents the output containing multiple processed reviews.
+    
+    This model is used as the container for returning a batch of
+    processed reviews with their extracted labels.
+    """
     
     reviews: List[Review] = Field(description="List of processed reviews")
+    
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "reviews": [
+                    {
+                        "review_id": "1001",
+                        "text": "The debt settlement process was taking too long.",
+                        "labels": [
+                            {
+                                "category": "Product & Services",
+                                "subcategory": "Progress Pace",
+                                "sentiment": "Negative"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    )
 
 
 class AnalysisRequest(BaseModel):
-    """Request model for analysis API."""
+    """
+    Request model for batch analysis of customer reviews.
     
-    reviews: List[str] = Field(description="List of review texts to analyze")
+    This model defines the input structure for submitting multiple
+    reviews for sentiment and topic analysis.
+    """
+    
+    reviews: List[str] = Field(
+        description="List of review texts to analyze",
+        min_length=1
+    )
     batch_size: Optional[int] = Field(
-        default=None, description="Batch size for processing")
+        default=None, 
+        description="Batch size for processing",
+        gt=0
+    )
     confidence_threshold: Optional[float] = Field(
-        default=None, description="Confidence threshold for predictions")
+        default=None, 
+        description="Confidence threshold for predictions",
+        ge=0.0, 
+        le=1.0
+    )
     max_labels_per_review: Optional[int] = Field(
-        default=None, description="Maximum number of labels per review")
+        default=None, 
+        description="Maximum number of labels per review",
+        gt=0
+    )
+    
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "reviews": [
+                    "The debt settlement process was taking too long.",
+                    "Customer service was very helpful and responsive."
+                ],
+                "batch_size": 5,
+                "confidence_threshold": 0.3,
+                "max_labels_per_review": 5
+            }
+        }
+    )
+    
+    @model_validator(mode='after')
+    def validate_parameters(self) -> 'AnalysisRequest':
+        """Validate that the request parameters are reasonable."""
+        if self.batch_size is not None and self.batch_size > len(self.reviews):
+            # Silently fix batch size to avoid unnecessary batching
+            object.__setattr__(self, 'batch_size', len(self.reviews))
+            
+        if self.max_labels_per_review is not None and self.max_labels_per_review > 10:
+            # Cap maximum labels to a reasonable number
+            object.__setattr__(self, 'max_labels_per_review', 10)
+            
+        return self

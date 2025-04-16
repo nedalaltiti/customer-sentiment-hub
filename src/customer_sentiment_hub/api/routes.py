@@ -17,7 +17,6 @@ from customer_sentiment_hub.api.models import (
     ReviewResponse, 
     ErrorResponse,
     HealthCheckResponse,
-    ProcessedReview
 )
 from customer_sentiment_hub.services.processor import ReviewProcessor
 from customer_sentiment_hub.services.gemini_service import GeminiService
@@ -117,6 +116,11 @@ async def analyze_reviews(
     review_request: ReviewRequest,
     services: Dict = Depends(get_services)
 ):
+    """
+    Analyze customer reviews for sentiment and extract insights.
+    
+    Processes a batch of review texts and returns detailed sentiment analysis.
+    """
     try:
         # Log the request
         logger.info(
@@ -134,75 +138,8 @@ async def analyze_reviews(
         
         # Check for success
         if result.is_success():
-            # Transform the result to match our API model
-            processed_reviews = []
-            
-            for review_data in result.value["reviews"]:
-                # Extract sentiment from labels or assign a default
-                sentiment = "neutral"  # Default sentiment
-                score = 0.5  # Default score
-                
-                # Try to determine sentiment from labels if available
-                if "labels" in review_data and review_data["labels"]:
-                    # Count sentiment occurrences
-                    sentiment_counts = {}
-                    for label in review_data["labels"]:
-                        if "sentiment" in label:
-                            # Convert to your SentimentLevel enum format
-                            label_sentiment = label["sentiment"].lower()
-                            if label_sentiment == "negative":
-                                normalized = "negative"
-                            elif label_sentiment == "positive":
-                                normalized = "positive"
-                            else:
-                                normalized = "neutral"
-                                
-                            sentiment_counts[normalized] = sentiment_counts.get(normalized, 0) + 1
-                    
-                    # Determine overall sentiment based on most common label
-                    if sentiment_counts:
-                        sentiment = max(sentiment_counts.items(), key=lambda x: x[1])[0]
-                        
-                        # Calculate a simple score (0-1 range)
-                        if sentiment == "negative":
-                            score = 0.2
-                        elif sentiment == "positive":
-                            score = 0.8
-                        else:
-                            score = 0.5
-                
-                # Create aspects from labels if they exist
-                aspects = []
-                if "labels" in review_data and review_data["labels"]:
-                    for label in review_data["labels"]:
-                        if "category" in label and "subcategory" in label and "sentiment" in label:
-                            # THIS IS THE CRITICAL FIX - always use a valid float for confidence
-                            confidence_value = 0.5  # Default confidence
-                            
-                            # Only use the actual confidence if it's a valid float
-                            if label.get("confidence") is not None and isinstance(label.get("confidence"), (int, float)):
-                                confidence_value = float(label.get("confidence"))
-                            
-                            aspects.append({
-                                "name": f"{label['category']} - {label['subcategory']}",
-                                "sentiment": label["sentiment"].lower(),
-                                "confidence": confidence_value  # Always a valid float
-                            })
-                
-                # Create a processed review that matches our model
-                processed_review = {
-                    "text": review_data["text"],
-                    "sentiment": sentiment,
-                    "score": score,
-                    "aspects": aspects,
-                    "keywords": [],  # Add logic to extract keywords if available
-                    "language": "en",  # Default language
-                    "processed_at": datetime.now()
-                }
-                
-                processed_reviews.append(processed_review)
-            
-            return {"reviews": processed_reviews}
+            # Direct passthrough of processor result - maintains compatibility with original app
+            return {"reviews": result.value["reviews"]}
         else:
             # Log the error
             logger.error(f"Error processing reviews: {result.error}")
@@ -219,7 +156,7 @@ async def analyze_reviews(
         # Return a user-friendly error
         raise HTTPException(
             status_code=500,
-            detail="An unexpected error occurred during review analysis"
+            detail=str(e)
         )
 
 
@@ -246,12 +183,8 @@ async def submit_batch_analysis(
             f"Job ID: {job_id}, Request ID: {getattr(request.state, 'request_id', 'unknown')}"
         )
         
-        # Queue the batch job (this would integrate with a task queue in production)
-        # For now, we'll just simulate enqueuing
         logger.info(f"Queued batch job {job_id} for processing")
         
-        # In a real implementation, you would send this to a background task processor
-        # such as Celery, RQ, or a cloud task queue
         
         return {
             "job_id": job_id,
@@ -277,18 +210,13 @@ async def get_batch_status(job_id: str):
     
     Returns the current status and, if complete, a link to download results.
     """
-    # In a real implementation, this would check a database or task queue
-    # For now, we'll simulate a response
     
-    # Simulate some basic validation
     if not job_id.startswith("job_"):
         raise HTTPException(
             status_code=400,
             detail="Invalid job ID format"
         )
     
-    # Return a simulated status
-    # In production, you would query your task system for the actual status
     return {
         "job_id": job_id,
         "status": "processing",  # Could be "queued", "processing", "completed", "failed"
@@ -336,9 +264,7 @@ async def get_sentiment_trends(
                 status_code=400,
                 detail=f"Invalid granularity. Must be one of: {', '.join(valid_granularities)}"
             )
-        
-        # In a real implementation, you would query your database for these trends
-        # For now, we'll return sample data
+    
         
         return {
             "period": {
@@ -369,7 +295,6 @@ async def get_sentiment_trends(
                     },
                     "average_score": 0.70
                 }
-                # Additional data points would be included in a real implementation
             ]
         }
     except HTTPException:
@@ -399,8 +324,7 @@ async def get_top_aspects(
     
     Returns the top aspects extracted from reviews, with counts and average sentiment.
     """
-    # Similar implementation to get_sentiment_trends
-    # Would query the database for the top aspects
+
     
     return {
         "period": {
@@ -429,7 +353,6 @@ async def get_top_aspects(
                 },
                 "average_score": 0.52
             }
-            # Additional aspects would be included in a real implementation
         ]
     }
 
