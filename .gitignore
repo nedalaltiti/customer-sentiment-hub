@@ -2,9 +2,7 @@
 __pycache__/
 *.py[cod]
 *.class
-*.so
 .Python
-env/
 build/
 develop-eggs/
 dist/
@@ -34,8 +32,3 @@ ENV/
 # Project specific
 .env
 *.log
-.coverage
-htmlcov/
-
-# MacOS
-.DS_Store
