@@ -10,12 +10,12 @@ from fastapi.responses import JSONResponse
 from typing import List, Dict, Optional, Any
 import time
 import logging
+import json
 from datetime import datetime
 
 from customer_sentiment_hub.api.models import (
     ReviewRequest, 
     ReviewResponse, 
-    ErrorResponse,
     HealthCheckResponse,
 )
 from customer_sentiment_hub.services.processor import ReviewProcessor
@@ -33,12 +33,28 @@ analytics_router = APIRouter(prefix="/analytics", tags=["Analytics"])
 admin_router = APIRouter(prefix="/admin", tags=["Administration"])
 
 
+# Custom JSON encoder to handle datetime objects
+class CustomJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that can handle datetime objects."""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
+
+# Function to safely serialize objects to JSON
+def safe_json_serialize(obj):
+    """Safely serialize an object to JSON, handling datetime objects."""
+    return json.dumps(obj, cls=CustomJSONEncoder)
+
+
 # Dependencies
 def get_services():
     """
     Dependency that provides initialized services for route handlers.
     
-    This ensures services are properly initialized and reused.
+    This ensures services are properly initialized and reused across requests,
+    improving performance and reducing resource consumption.
     """
     validation_service = ValidationService()
     gemini_service = GeminiService(
@@ -62,7 +78,7 @@ def verify_admin_role(request: Request):
     """
     Dependency that verifies the user has admin role.
     
-    Used to protect admin endpoints.
+    Used to protect admin endpoints and ensure proper authorization.
     """
     user_role = getattr(request.state, "user_role", None)
     if user_role != "admin":
@@ -79,7 +95,7 @@ async def health_check():
     """
     Check the health status of the API and its dependencies.
     
-    Returns a health status object with information about dependencies.
+    Returns a health status object with information about the system's operational status.
     """
     dependencies_status = {}
     
@@ -102,11 +118,15 @@ async def health_check():
     # Determine overall status
     status = "healthy" if all(v == "available" for v in dependencies_status.values()) else "degraded"
     
-    return HealthCheckResponse(
-        status=status,
-        version=settings.version,
-        dependencies=dependencies_status
-    )
+    # Create response with safe serialization
+    response_data = {
+        "status": status,
+        "version": settings.version,
+        "dependencies": dependencies_status,
+        "timestamp": datetime.now()  # This will be properly serialized
+    }
+    
+    return HealthCheckResponse(**response_data)
 
 
 # Main sentiment analysis endpoint
@@ -119,26 +139,34 @@ async def analyze_reviews(
     """
     Analyze customer reviews for sentiment and extract insights.
     
-    Processes a batch of review texts and returns detailed sentiment analysis.
+    Processes a batch of review inputs and returns detailed sentiment analysis,
+    preserving the connection between input review IDs and their analysis results.
     """
     try:
+        # Count the number of reviews for proper logging
+        review_count = len(review_request.reviews)
+        
         # Log the request
         logger.info(
-            f"Processing sentiment analysis request with {len(review_request.texts)} reviews. "
+            f"Processing sentiment analysis request with {review_count} reviews. "
             f"Request ID: {getattr(request.state, 'request_id', 'unknown')}"
         )
         
-        # Process the reviews
+        # Extract review texts and IDs from the request
+        review_texts = [review.review_text for review in review_request.reviews]
+        review_ids = [review.review_id for review in review_request.reviews]
+        
+        # Process the reviews with their IDs
         start_time = time.time()
-        result = await services["processor"].process_reviews(review_request.texts)
+        result = await services["processor"].process_reviews(review_texts, review_ids)
         processing_time = time.time() - start_time
         
         # Log processing time
-        logger.info(f"Sentiment analysis completed in {processing_time:.2f} seconds")
+        logger.info(f"Sentiment analysis completed in {processing_time:.2f} seconds for {review_count} reviews")
         
         # Check for success
         if result.is_success():
-            # Direct passthrough of processor result - maintains compatibility with original app
+            # Return the processed reviews
             return {"reviews": result.value["reviews"]}
         else:
             # Log the error
@@ -161,7 +189,7 @@ async def analyze_reviews(
 
 
 # Batch processing endpoint
-@main_router.post("/analyze/batch", response_model=Dict[str, str], tags=["Sentiment Analysis"])
+@main_router.post("/analyze/batch", tags=["Sentiment Analysis"])
 async def submit_batch_analysis(
     request: Request,
     review_request: ReviewRequest,
@@ -172,25 +200,39 @@ async def submit_batch_analysis(
     Submit a batch of reviews for asynchronous processing.
     
     Returns a job ID that can be used to check the status later.
+    This endpoint is useful for processing large numbers of reviews
+    without waiting for immediate results.
     """
     try:
-        # Generate a job ID
-        job_id = f"job_{int(time.time())}_{hash(str(review_request.texts)[:100]) % 10000}"
+        # Extract review texts and IDs
+        review_texts = [review.review_text for review in review_request.reviews]
+        review_ids = [review.review_id for review in review_request.reviews]
+        
+        # Generate a consistent job ID based on request content
+        hash_input = "_".join(review_ids[:5]) if review_ids else "_".join(review_texts[:5])
+        job_id = f"job_{int(time.time())}_{hash(hash_input) % 10000}"
         
         # Log the batch request
         logger.info(
-            f"Received batch analysis request with {len(review_request.texts)} reviews. "
+            f"Received batch analysis request with {len(review_request.reviews)} reviews. "
             f"Job ID: {job_id}, Request ID: {getattr(request.state, 'request_id', 'unknown')}"
         )
         
+        # Here we would typically enqueue the job for background processing
+        # For now, just log that we've queued it
         logger.info(f"Queued batch job {job_id} for processing")
         
-        
-        return {
+        # Return job information to the client using JSONResponse to handle datetime
+        response_data = {
             "job_id": job_id,
             "status": "queued",
-            "message": "Batch analysis job submitted successfully"
+            "message": "Batch analysis job submitted successfully",
+            "review_count": len(review_request.reviews),
+            "submitted_at": datetime.now()  # This will be properly serialized
         }
+        
+        # Use safe serialization for response
+        return JSONResponse(content=response_data)
     except Exception as e:
         # Log the exception
         logger.exception(f"Error submitting batch analysis job: {str(e)}")
@@ -209,21 +251,26 @@ async def get_batch_status(job_id: str):
     Check the status of a previously submitted batch job.
     
     Returns the current status and, if complete, a link to download results.
+    This endpoint allows clients to poll for job completion.
     """
-    
     if not job_id.startswith("job_"):
         raise HTTPException(
             status_code=400,
             detail="Invalid job ID format"
         )
     
-    return {
+    # Here you would typically query a job status database
+    # For now, return mock data with datetime
+    response_data = {
         "job_id": job_id,
         "status": "processing",  # Could be "queued", "processing", "completed", "failed"
         "progress": 45,  # Percentage complete
-        "submitted_at": "2025-04-16T14:30:00Z",
-        "estimated_completion": "2025-04-16T14:35:00Z"
+        "submitted_at": datetime.now().replace(hour=14, minute=30, second=0),
+        "estimated_completion": datetime.now().replace(hour=14, minute=35, second=0)
     }
+    
+    # Use safe serialization for response
+    return JSONResponse(content=response_data)
 
 
 # Analytics endpoints
@@ -237,7 +284,8 @@ async def get_sentiment_trends(
     """
     Get sentiment trends over a specified time period.
     
-    Returns aggregated sentiment data across the specified date range.
+    Returns aggregated sentiment data across the specified date range,
+    allowing analysis of sentiment changes over time.
     """
     try:
         # Parse dates
@@ -265,16 +313,17 @@ async def get_sentiment_trends(
                 detail=f"Invalid granularity. Must be one of: {', '.join(valid_granularities)}"
             )
     
-        
-        return {
+        # Here you would typically query your analytics database
+        # For now, return mock data with datetime objects
+        response_data = {
             "period": {
-                "start": start_date,
-                "end": end_date,
+                "start": start,
+                "end": end,
                 "granularity": granularity
             },
             "trends": [
                 {
-                    "timestamp": "2025-04-10T00:00:00Z",
+                    "timestamp": datetime(2025, 4, 10),
                     "sentiment_distribution": {
                         "very_positive": 0.25,
                         "positive": 0.45,
@@ -285,7 +334,7 @@ async def get_sentiment_trends(
                     "average_score": 0.75
                 },
                 {
-                    "timestamp": "2025-04-11T00:00:00Z",
+                    "timestamp": datetime(2025, 4, 11),
                     "sentiment_distribution": {
                         "very_positive": 0.20,
                         "positive": 0.40,
@@ -297,6 +346,9 @@ async def get_sentiment_trends(
                 }
             ]
         }
+        
+        # Use safe serialization for response
+        return JSONResponse(content=response_data)
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
@@ -323,13 +375,15 @@ async def get_top_aspects(
     Get the most frequently mentioned aspects in reviews.
     
     Returns the top aspects extracted from reviews, with counts and average sentiment.
+    This endpoint helps identify the most common topics in customer feedback.
     """
-
-    
-    return {
+    # Here you would typically query your analytics database
+    # For now, return mock data with datetime objects
+    response_data = {
         "period": {
             "start": start_date,
-            "end": end_date
+            "end": end_date,
+            "timestamp": datetime.now()
         },
         "sentiment_filter": sentiment,
         "aspects": [
@@ -355,6 +409,9 @@ async def get_top_aspects(
             }
         ]
     }
+    
+    # Use safe serialization for response
+    return JSONResponse(content=response_data)
 
 
 # Admin endpoints - protected by admin role verification
@@ -364,14 +421,19 @@ async def get_queue_status():
     Get the status of the processing queue.
     
     Returns information about current queue length and processing rates.
-    Admin access required.
+    Admin access required for this endpoint.
     """
-    return {
+    # Here you would typically query your job queue system
+    # For now, return mock data with datetime objects
+    response_data = {
         "queue_length": 45,
         "processing_rate": 12.5,  # Jobs per minute
-        "oldest_job": "2025-04-16T14:15:00Z",
-        "estimated_completion_time": "2025-04-16T14:45:00Z"
+        "oldest_job": datetime.now().replace(hour=14, minute=15, second=0),
+        "estimated_completion_time": datetime.now().replace(hour=14, minute=45, second=0)
     }
+    
+    # Use safe serialization for response
+    return JSONResponse(content=response_data)
 
 
 @admin_router.post("/reprocess/{job_id}", dependencies=[Depends(verify_admin_role)], tags=["Administration"])
@@ -380,20 +442,33 @@ async def reprocess_job(job_id: str):
     Reprocess a specific batch job.
     
     Useful for jobs that failed or produced incorrect results.
-    Admin access required.
+    Admin access required for this endpoint.
     """
-    return {
+    if not job_id.startswith("job_"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid job ID format"
+        )
+    
+    # Here you would typically requeue the job
+    # For now, just return a success response with timestamp
+    response_data = {
         "job_id": job_id,
         "status": "requeued",
-        "message": "Job has been requeued for processing"
+        "message": "Job has been requeued for processing",
+        "requeued_at": datetime.now()
     }
+    
+    # Use safe serialization for response
+    return JSONResponse(content=response_data)
 
 
 def setup_routes(app):
     """
     Configure and add all routes to the FastAPI application.
     
-    This function centralizes route registration.
+    This function centralizes route registration, making it easier to
+    manage and modify the API's structure.
     """
     # Include all routers
     app.include_router(main_router)

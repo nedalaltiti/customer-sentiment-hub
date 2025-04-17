@@ -13,32 +13,51 @@ import datetime
 # Import domain models from schema to prevent duplication
 from customer_sentiment_hub.domain.schema import Label, Review, ReviewOutput
 
-# API-specific request model
-class ReviewRequest(BaseModel):
-    """Model for the request body when submitting reviews for analysis."""
-    texts: conlist(str, min_length=1, max_length=500) = Field(
-        ..., 
-        description="List of review texts to analyze (1-500 items)"
-    )
+# Define the individual review input model
+class ReviewInput(BaseModel):
+    """Model for an individual review input with ID."""
+    review_id: str = Field(..., description="Unique identifier for the review")
+    review_text: str = Field(..., description="Text content of the review")
     
-    @validator('texts')
-    def validate_text_length(cls, texts):
-        """Validate that no individual text is too long."""
+    @validator('review_text')
+    def validate_text_length(cls, text):
+        """Validate that the review text is not too long."""
         max_length = 5000  # Maximum characters per review
-        for i, text in enumerate(texts):
-            if len(text) > max_length:
-                raise ValueError(f"Review at index {i} exceeds maximum length of {max_length} characters")
-            if not text.strip():
-                raise ValueError(f"Review at index {i} is empty or contains only whitespace")
-        return texts
+        if len(text) > max_length:
+            raise ValueError(f"Review text exceeds maximum length of {max_length} characters")
+        if not text.strip():
+            raise ValueError("Review text is empty or contains only whitespace")
+        return text
     
     model_config = {
         "json_schema_extra": {
             "example": {
-                "texts": [
-                    "I love this product! Works perfectly for my needs.",
-                    "The customer service was terrible. Would not recommend.",
-                    "Average experience, nothing special to report."
+                "review_id": "12345",
+                "review_text": "I love this product! Works perfectly for my needs."
+            }
+        }
+    }
+
+# Update the API-specific request model
+class ReviewRequest(BaseModel):
+    """Model for the request body when submitting reviews for analysis."""
+    reviews: conlist(ReviewInput, min_length=1, max_length=500) = Field(
+        ..., 
+        description="List of reviews to analyze (1-500 items)"
+    )
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "reviews": [
+                    {
+                        "review_id": "12345",
+                        "review_text": "I love this product! Works perfectly for my needs."
+                    },
+                    {
+                        "review_id": "67890",
+                        "review_text": "The customer service was terrible. Would not recommend."
+                    }
                 ]
             }
         }
