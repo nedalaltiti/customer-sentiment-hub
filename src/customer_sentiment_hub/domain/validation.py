@@ -85,122 +85,91 @@ class ValidationService:
     
     def validate_and_fix_label(self, label: Dict[str, str]) -> Dict[str, str]:
         """
-        Validate and fix a label to ensure it conforms to the taxonomy.
-        
-        This method applies a series of validation and correction rules:
-        1. Ensures sentiment is standardized
-        2. Fixes cases where category and subcategory are swapped
-        3. Handles missing fields with reasonable defaults
-        4. Corrects invalid category/subcategory combinations
-        
-        Args:
-            label: A label dictionary with category, subcategory, and sentiment
-            
-        Returns:
-            Dict[str, str]: A corrected label dictionary that conforms to the taxonomy
+        Validate and fix a label so it always conforms to the taxonomy.
         """
-        # Create a copy to avoid modifying the original
-        fixed_label = label.copy()
-        
-        # Step 1: Clean sentiment - always needed
-        if "sentiment" in fixed_label:
-            fixed_label["sentiment"] = self.clean_sentiment(fixed_label["sentiment"])
-        else:
-            fixed_label["sentiment"] = Sentiment.NEUTRAL.value
-        
-        # Step 2: Handle category-related issues
-        if "category" not in fixed_label:
-            # No category provided
-            if "subcategory" in fixed_label:
-                # Try to infer category from subcategory
-                category = get_category_for_subcategory(fixed_label["subcategory"])
-                fixed_label["category"] = category
+        fixed = label.copy()
+
+        # 1) Clean or default the sentiment
+        fixed["sentiment"] = (
+            self.clean_sentiment(fixed.get("sentiment"))
+            if "sentiment" in fixed
+            else Sentiment.NEUTRAL.value
+        )
+
+        # 2) Handle entirely empty labels
+        if "category" not in fixed and "subcategory" not in fixed:
+            return {
+                "category": CategoryType.MISCELLANEOUS.value,
+                "subcategory": "Other",
+                "sentiment": fixed["sentiment"],
+            }
+
+        # 3) Correct swapped category/subcategory fields
+        #    e.g. category="Progress Pace", subcategory="Product & Services"
+        if (
+            fixed.get("category") in self.valid_subcategories.get(fixed.get("subcategory", ""), set())
+            and fixed.get("subcategory") in self.valid_categories
+        ):
+            fixed["category"], fixed["subcategory"] = (
+                fixed["subcategory"],
+                fixed["category"],
+            )
+
+        #   a) Fee Collection under Product & Services → use Progress Pace
+        if (
+            fixed.get("category") == CategoryType.PRODUCT_SERVICES.value
+            and fixed.get("subcategory") == "Fee Collection"
+        ):
+            fixed["subcategory"] = "Progress Pace"
+
+        #   b) Invalid Category + Communication Method → category = Communication
+        if (
+            fixed.get("category") not in self.valid_categories
+            and fixed.get("subcategory") == "Communication Method"
+        ):
+            fixed["category"] = "Communication"
+
+        # 5) Fill in or correct the category
+        if fixed.get("category") not in self.valid_categories:
+            # If subcategory is valid, infer its parent category
+            subcat = fixed.get("subcategory")
+            parent = get_category_for_subcategory(subcat) if subcat else None
+            if parent in self.valid_categories:
+                fixed["category"] = parent
             else:
-                # No category or subcategory - use default
-                fixed_label["category"] = CategoryType.MISCELLANEOUS.value
-                fixed_label["subcategory"] = "Other"
-                return fixed_label
-        
-        # Step 3: Check if category is valid
-        if fixed_label["category"] not in self.valid_categories:
-            # Category might be a sentiment or subcategory
-            
-            # Check if it's a sentiment
-            if fixed_label["category"] in self.valid_sentiments:
-                # Move to sentiment if needed and use default category
-                fixed_label["sentiment"] = fixed_label["category"]
-                
-                # Try to use subcategory's parent category
-                if "subcategory" in fixed_label:
-                    parent = get_category_for_subcategory(fixed_label["subcategory"])
-                    fixed_label["category"] = parent
-                else:
-                    fixed_label["category"] = CategoryType.MISCELLANEOUS.value
-                    fixed_label["subcategory"] = "Other"
-                
-            # Check if it's a subcategory
+                fixed["category"] = CategoryType.MISCELLANEOUS.value
+
+        # 6) Fill in or correct the subcategory
+        subcats_for_cat = self.valid_subcategories.get(fixed["category"], set())
+
+        #   a) Missing subcategory
+        if "subcategory" not in fixed or not fixed["subcategory"]:
+            # pick any valid subcategory for that (category, sentiment)
+            choices = TAXONOMY["Categories"][fixed["category"]].get(
+                fixed["sentiment"], set()
+            )
+            if choices:
+                fixed["subcategory"] = next(iter(choices))
+            elif subcats_for_cat:
+                fixed["subcategory"] = next(iter(subcats_for_cat))
             else:
-                subcategory = fixed_label["category"]
-                parent = get_category_for_subcategory(subcategory)
-                
-                # If we found a parent, use it
-                if parent != CategoryType.MISCELLANEOUS.value or subcategory == "Other":
-                    fixed_label["subcategory"] = subcategory
-                    fixed_label["category"] = parent
-                else:
-                    # Couldn't find a match - use default
-                    fixed_label["category"] = CategoryType.MISCELLANEOUS.value
-                    fixed_label["subcategory"] = "Other"
-        
-        # Step 4: Handle subcategory issues
-        if "subcategory" not in fixed_label:
-            # Missing subcategory - use default based on sentiment
-            sentiment = fixed_label["sentiment"]
-            category = fixed_label["category"]
-            
-            # Get subcategories for this category and sentiment
-            subcats = TAXONOMY["Categories"].get(category, {}).get(sentiment, frozenset())
-            
-            if subcats:
-                # Use the first available subcategory
-                fixed_label["subcategory"] = next(iter(subcats))
+                fixed["subcategory"] = "Other"
+
+        #   b) Subcategory not valid for this category
+        elif not is_valid_subcategory_for_category(fixed["category"], fixed["subcategory"]):
+            # again pick a valid one
+            choices = TAXONOMY["Categories"][fixed["category"]].get(
+                fixed["sentiment"], set()
+            )
+            if choices:
+                fixed["subcategory"] = next(iter(choices))
+            elif subcats_for_cat:
+                fixed["subcategory"] = next(iter(subcats_for_cat))
             else:
-                # No matching subcategories - use "Other" if available
-                all_subcats = self.valid_subcategories.get(category, frozenset())
-                if "Other" in all_subcats:
-                    fixed_label["subcategory"] = "Other"
-                elif all_subcats:
-                    # Use any available subcategory
-                    fixed_label["subcategory"] = next(iter(all_subcats))
-                else:
-                    # Fall back to miscellaneous
-                    fixed_label["category"] = CategoryType.MISCELLANEOUS.value
-                    fixed_label["subcategory"] = "Other"
-        
-        # Step 5: Check subcategory validity for the category
-        elif not is_valid_subcategory_for_category(fixed_label["category"], fixed_label["subcategory"]):
-            # Invalid subcategory for this category
-            category = fixed_label["category"]
-            sentiment = fixed_label["sentiment"]
-            
-            # Try to find a valid subcategory for this category and sentiment
-            subcats = TAXONOMY["Categories"].get(category, {}).get(sentiment, frozenset())
-            
-            if subcats:
-                fixed_label["subcategory"] = next(iter(subcats))
-            else:
-                # Try "Other" or any valid subcategory
-                all_subcats = self.valid_subcategories.get(category, frozenset())
-                if "Other" in all_subcats:
-                    fixed_label["subcategory"] = "Other"
-                elif all_subcats:
-                    fixed_label["subcategory"] = next(iter(all_subcats))
-                else:
-                    # Fall back to miscellaneous
-                    fixed_label["category"] = CategoryType.MISCELLANEOUS.value
-                    fixed_label["subcategory"] = "Other"
-        
-        return fixed_label
+                fixed["subcategory"] = "Other"
+
+        return fixed
+
     
     def validate_review_labels(self, labels: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
