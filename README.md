@@ -69,10 +69,36 @@ customer-sentiment-hub/
 │       │   ├── logging.py
 │       │   ├── result.py
 │       │   └── helpers.py
-│       └── cli/
-│           ├── __init__.py
-│           ├── commands.py
-│           └── app.py
+│       │── cli/
+│       │  ├── __init__.py
+│       │  ├── commands.py
+│       ├──└── app.py
+│       │──tests/
+│       │   │
+│       │   ├── __init__.py
+│       │   ├── conftest.py
+│       │   ├── unit/
+│       │   │   ├── __init__.py
+│       │   │   ├── test_taxonomy.py
+│       │   │   ├── test_schema.py
+│       │   │    └── test_validation.py
+│       │   ├── integration/
+│       │   │   ├── __init__.py
+│       │   │   └── test_analyzer.py
+│       └───── fixtures/
+│               ├── __init__.py
+│               ├── reviews.json
+│               └── responses.json
+└── docs/
+    ├── index.md
+    ├── user_guide.md
+    ├── api.md
+    └── development.md
+
+
+
+
+
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py
