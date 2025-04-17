@@ -32,3 +32,4 @@ ENV/
 # Project specific
 .env
 *.log
+credentials/
