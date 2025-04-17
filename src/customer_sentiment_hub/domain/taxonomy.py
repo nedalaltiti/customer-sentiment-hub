@@ -6,7 +6,7 @@ and sentiment classifications used for analyzing customer reviews.
 """
 
 from enum import Enum
-from typing import Dict, FrozenSet, List, Mapping, Set, Tuple
+from typing import Dict, FrozenSet
 from functools import lru_cache
 
 # Define constants for clarity and maintainability

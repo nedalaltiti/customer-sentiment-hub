@@ -6,7 +6,6 @@ from typing import Dict, List, Optional
 from google.cloud import aiplatform
 from langchain_google_vertexai import ChatVertexAI
 from langchain.output_parsers import PydanticOutputParser
-from langchain.prompts import ChatPromptTemplate
 
 from customer_sentiment_hub.config.settings import GeminiSettings, GoogleCloudSettings
 from customer_sentiment_hub.domain.schema import ReviewOutput

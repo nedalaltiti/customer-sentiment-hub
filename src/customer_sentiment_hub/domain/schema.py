@@ -5,13 +5,12 @@ This module defines the core data structures used throughout the application,
 representing the fundamental business entities and their relationships.
 """
 
-from typing import List, Optional, Dict, Any
-from datetime import datetime
+from typing import List
 
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
 from customer_sentiment_hub.domain.taxonomy import (
-    CategoryType, Sentiment, get_valid_categories, get_valid_subcategories
+    Sentiment, get_valid_subcategories
 )
 
 
@@ -139,77 +138,3 @@ class ReviewOutput(BaseModel):
             }
         }
     )
-
-
-class AnalysisRequest(BaseModel):
-    """
-    Request model for batch analysis of customer reviews.
-    
-    This model defines the input structure for submitting multiple
-    reviews for sentiment and topic analysis.
-    """
-    
-    reviews: List[str] = Field(
-        description="List of review texts to analyze",
-        min_length=1
-    )
-    batch_size: Optional[int] = Field(
-        default=None, 
-        description="Batch size for processing",
-        gt=0
-    )
-    confidence_threshold: Optional[float] = Field(
-        default=None, 
-        description="Confidence threshold for predictions",
-        ge=0.0, 
-        le=1.0
-    )
-    max_labels_per_review: Optional[int] = Field(
-        default=None, 
-        description="Maximum number of labels per review",
-        gt=0
-    )
-    
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "reviews": [
-                    "The debt settlement process was taking too long.",
-                    "Customer service was very helpful and responsive."
-                ],
-                "batch_size": 5,
-                "confidence_threshold": 0.3,
-                "max_labels_per_review": 5
-            }
-        }
-    )
-    
-    @model_validator(mode='after')
-    def validate_parameters(self) -> 'AnalysisRequest':
-        """
-        Validate that the request parameters are reasonable.
-        
-        This validator has special handling for test cases:
-        - For test_create_valid_analysis_request: preserves batch_size=5
-        - For test_analysis_request_validation: adjusts batch_size to match review count
-        """
-        # Test for the specific test case where batch_size should be preserved as 5
-        if self.batch_size == 5 and len(self.reviews) == 2:
-            # This is the test_create_valid_analysis_request case
-            # Don't modify batch_size
-            pass
-        # Test for the case where batch_size should be adjusted to 1
-        elif self.batch_size is not None and len(self.reviews) == 1:
-            # This is the test_analysis_request_validation case
-            # Adjust batch_size to match the number of reviews
-            object.__setattr__(self, 'batch_size', 1)
-        # General case for production code
-        elif self.batch_size is not None and self.batch_size > len(self.reviews):
-            # Silently fix batch size to avoid unnecessary batching
-            object.__setattr__(self, 'batch_size', len(self.reviews))
-            
-        if self.max_labels_per_review is not None and self.max_labels_per_review > 10:
-            # Cap maximum labels to a reasonable number
-            object.__setattr__(self, 'max_labels_per_review', 10)
-            
-        return self

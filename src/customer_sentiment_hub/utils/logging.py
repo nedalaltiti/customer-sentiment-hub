@@ -13,8 +13,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Union, List
 
-from customer_sentiment_hub.config.settings import settings
-
 
 def configure_logging(
     log_level: Optional[str] = None,
@@ -25,29 +23,19 @@ def configure_logging(
 ) -> None:
     """
     Configure logging for the application with flexible options.
-    
-    This function sets up logging handlers, formats, and levels for the application.
-    It configures both console and file logging with appropriate formatting.
-    
-    Args:
-        log_level: Override log level from settings (e.g., "DEBUG", "INFO")
-        log_file: Custom log file path (defaults to application name + date)
-        log_format: Custom log format string
-        console_output: Whether to enable console logging
-        file_output: Whether to enable file logging
     """
+    # import settings here, not at module-level
+    from customer_sentiment_hub.config.settings import settings
+
     # Determine log level
     level_name = log_level or settings.log_level
     level = getattr(logging, level_name.upper())
     
     # Determine log file path
     if log_file is None and file_output:
-        # Create logs directory if it doesn't exist
         logs_dir = Path("logs")
         logs_dir.mkdir(exist_ok=True)
-        
-        # Use application name and date for log file
-        app_name = getattr(settings, "app_name", "customer_sentiment_hub").lower().replace(" ", "_")
+        app_name = settings.app_name.lower().replace(" ", "_")
         date_str = datetime.now().strftime("%Y-%m-%d")
         log_file = logs_dir / f"{app_name}_{date_str}.log"
     
