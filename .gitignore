@@ -33,3 +33,4 @@ ENV/
 .env
 *.log
 credentials/
+archive/

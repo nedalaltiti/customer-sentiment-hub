@@ -60,6 +60,29 @@ class GeminiService(LLMService):
             f"Initialized Gemini service with model {gemini_settings.model_name}"
         )
     
+    async def test_connection(self) -> bool:
+        """
+        Test connection to Gemini API.
+        
+        Returns:
+            bool: True if connection is successful, raises an exception otherwise
+        """
+        try:
+            # Simple test to check if Gemini API is accessible
+            # Use a minimal prompt that requires minimal tokens and processing
+            test_response = self.llm.invoke("Hello, are you available?")
+            
+            # If we get a response, connection is successful
+            if test_response and hasattr(test_response, 'content'):
+                logger.info("Gemini API connection test successful")
+                return True
+            else:
+                logger.error("Gemini API connection test failed: No response content")
+                raise ConnectionError("No response content from Gemini API")
+        except Exception as e:
+            logger.error(f"Gemini API connection test failed: {str(e)}")
+            raise
+    
     async def analyze_reviews(self, review_texts: List[str]) -> Result[Dict]:
         """
         Analyze a batch of review texts.
