@@ -8,11 +8,11 @@ as well as internal data models used for processing and analysis.
 """
 
 from pydantic import BaseModel, Field, validator
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any, Union
 import datetime
 
 # Import domain models directly
-from customer_sentiment_hub.domain.schema import Review
+from customer_sentiment_hub.domain.schema import Review, Label
 
 
 class ReviewInput(BaseModel):
@@ -59,7 +59,6 @@ class ReviewRequest(BaseModel):
             }
         }
 
-
 class ReviewResponse(BaseModel):
     """Response body with processed reviews."""
     reviews: List[Review] = Field(..., description="Sentiment‐labeled reviews")
@@ -70,12 +69,13 @@ class ReviewResponse(BaseModel):
                 "reviews": [
                     {
                         "review_id": "1000",
-                        "text": "Loved it!",
+                        "review_text": "Loved it!",
+                        "language": "en",
                         "labels": [
                             {
                                 "category": "Product & Services",
                                 "subcategory": "Progress Pace",
-                                "sentiment": "Positive"
+                                "sentiment": "Positive",
                             }
                         ]
                     }
@@ -103,7 +103,6 @@ class ErrorResponse(BaseModel):
         }
 
 
-# Health check response model
 class HealthCheckResponse(BaseModel):
     """Model for health check responses."""
     status: str = Field(..., description="Service status")
@@ -123,3 +122,49 @@ class HealthCheckResponse(BaseModel):
                 "timestamp": "2025-04-17T12:00:00Z"
             }
         }
+
+# --- Updated Freshdesk Webhook Payload Model --- 
+
+class FreshdeskReviewItem(BaseModel):
+    """Represents a single review item within the Freshdesk webhook payload."""
+    # Handle ticket_id as either string or integer (both are possible from Freshdesk)
+    review_id: Union[int, str] = Field(..., description="The ID of the Freshdesk ticket")
+    # HTML description content from the ticket
+    review_text: Optional[str] = Field(None, description="The HTML description content from the ticket")
+    
+    @validator("review_id")
+    def convert_review_id(cls, v):
+        # Convert string IDs to integers when possible
+        if isinstance(v, str) and v.isdigit():
+            return int(v)
+        return v
+
+class FreshdeskWebhookPayload(BaseModel):
+    """
+    Represents the expected payload from a Freshdesk webhook, 
+    matching the structure: {"reviews": [...]}
+    """
+    reviews: List[FreshdeskReviewItem] = Field(..., description="List containing ticket ID and description")
+
+    @validator("reviews")
+    def check_at_least_one_review(cls, v):
+        if not v:
+            raise ValueError("Webhook payload must contain at least one review item")
+        # We only process the first item for now
+        if len(v) > 1:
+            # Log a warning or handle multiple reviews if needed in the future
+            pass 
+        return v
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "reviews": [
+                    {
+                        "review_id": 12345,
+                        "review_text": "<div>Example HTML review text...</div>"
+                    }
+                ]
+            }
+        }
+

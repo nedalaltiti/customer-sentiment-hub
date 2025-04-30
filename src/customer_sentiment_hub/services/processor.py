@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 import os
-from typing import Dict, List, Optional, Union
+import re
+import demoji
+from typing import List, Dict, Optional
 
 from customer_sentiment_hub.config.settings import ProcessingSettings
 from customer_sentiment_hub.services.llm_service import LLMService
@@ -46,8 +48,11 @@ class ReviewProcessor:
         Returns:
             Result containing the processed review or error
         """
+        # Preprocess the review text to handle emojis
+        processed_text = preprocess_review_text(review_text)
+        
         review_ids = [review_id] if review_id is not None else None
-        return await self.process_reviews([review_text], review_ids)
+        return await self.process_reviews([processed_text], review_ids)
     
     async def process_reviews(self, review_texts: List[str], review_ids: Optional[List[str]] = None) -> Result[Dict]:
         """
@@ -61,7 +66,7 @@ class ReviewProcessor:
             Result containing the processed reviews or error
         """
         # Validate inputs
-        if not review_texts:
+        if not review_texts:  # Fixed condition to check for empty list
             return Error("No reviews provided for analysis")
         
         # Handle review IDs
@@ -72,9 +77,12 @@ class ReviewProcessor:
             # Generate sequential IDs for backward compatibility
             review_ids = [f"{1000 + i}" for i in range(len(review_texts))]
         
-        if len(review_texts) <= self.settings.batch_size:
+        # Preprocess all review texts to handle emojis
+        preprocessed_texts = [preprocess_review_text(text) for text in review_texts]
+        
+        if len(preprocessed_texts) <= self.settings.batch_size:
             # Process directly if the batch is small enough
-            result = await self.llm_service.analyze_reviews(review_texts)
+            result = await self.llm_service.analyze_reviews(preprocessed_texts)
             
             # Update review IDs if successful
             if result.is_success() and "reviews" in result.value:
@@ -85,7 +93,7 @@ class ReviewProcessor:
             return result
         else:
             # Process in batches for larger sets
-            return await self._process_in_batches(review_texts, review_ids)
+            return await self._process_in_batches(preprocessed_texts, review_ids)
     
     async def _process_in_batches(self, review_texts: List[str], review_ids: List[str]) -> Result[Dict]:
         """
@@ -229,3 +237,22 @@ class ReviewProcessor:
             error_msg = f"Error processing file {file_path}: {str(e)}"
             logger.error(error_msg)
             return Error(error_msg)
+
+
+def preprocess_review_text(text: str) -> str:
+    """
+    Preprocess review text to handle emojis and special characters.
+    
+    Args:
+        text: The original review text
+        
+    Returns:
+        Preprocessed text with emojis converted to text descriptions
+    """
+    # Convert emojis to text descriptions
+    text_with_emoji_descriptions = demoji.replace_with_desc(text, sep=" ")
+    
+    # Remove excessive whitespace
+    cleaned_text = re.sub(r'\s+', ' ', text_with_emoji_descriptions).strip()
+    
+    return cleaned_text

@@ -4,37 +4,46 @@
 Main application module for the Customer Sentiment Hub API.
 
 Initializes the FastAPI app, configures middleware, exception handlers,
-logging, and mounts only the live endpoints (/health and /analyze).
+logging, and mounts API endpoints.
 """
 
 import json
 import logging
 import time
+import uuid # Added for correlation ID
 from datetime import datetime
 from typing import Any, Dict
+from contextlib import asynccontextmanager # Use lifespan for modern FastAPI
 
 from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-
+from fastapi.middleware.cors import CORSMiddleware # Added CORS
 
 from customer_sentiment_hub.config.settings import settings
 from customer_sentiment_hub.api.models import ErrorResponse
-
 from customer_sentiment_hub.api.routes import main_router
 from customer_sentiment_hub.services.gemini_service import GeminiService
 from customer_sentiment_hub.services.processor import ReviewProcessor
 from customer_sentiment_hub.domain.validation import ValidationService
 from customer_sentiment_hub.utils.logging import configure_logging, get_logger
+# Assuming metrics collector exists as per previous analysis
+# from customer_sentiment_hub.utils.metrics import MetricsCollector 
 
+# Import Freshdesk Service
+from customer_sentiment_hub.services.freshdesk_service import FreshdeskService
 
+# Configure logging (using settings.logging_.level if defined like that)
+log_level_to_use = settings.logging_.level if hasattr(settings, 'logging_') else settings.log_level
 configure_logging(
-    log_level=settings.log_level,
+    log_level=log_level_to_use,
     console_output=True,
-    file_output=True,
+    file_output=True, # Consider disabling file output if logging to CloudWatch
 )
 logger = get_logger(__name__)
 
+# Initialize metrics collector if used
+# metrics = MetricsCollector()
 
 class _CustomJSONEncoder(json.JSONEncoder):
     """Extend JSON encoding to support datetime objects."""
@@ -43,11 +52,9 @@ class _CustomJSONEncoder(json.JSONEncoder):
             return obj.isoformat()
         return super().default(obj)
 
-
 def _safe_serialize(obj: Any) -> Dict[str, Any]:
     """Serialize arbitrary object to JSON-compatible dict using custom encoder."""
     return json.loads(json.dumps(obj, cls=_CustomJSONEncoder))
-
 
 def _register_exception_handlers(app: FastAPI) -> None:
     """
@@ -59,29 +66,41 @@ def _register_exception_handlers(app: FastAPI) -> None:
     async def _handle_request_validation(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        start = time.time()
+        correlation_id = getattr(request.state, 'correlation_id', 'N/A')
         errors = "; ".join(
             f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()
         )
-        logger.warning("Validation failed: %s", errors)
-        payload = ErrorResponse(
-            detail=f"Validation error: {errors}",
-            code="VALIDATION_ERROR",
-            path=request.url.path,
-            timestamp=datetime.utcnow(),
-        ).model_dump()
-        logger.debug("Validation error handled in %.4fs", time.time() - start)
+        logger.warning(
+            "Validation failed",
+            extra={
+                "correlation_id": correlation_id,
+                "errors": errors,
+                "path": request.url.path
+            }
+        )
+        # Use detail structure expected by FastAPI default handler for better tooling integration
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content=_safe_serialize(payload),
+            content={"detail": exc.errors()}, 
         )
 
     @app.exception_handler(HTTPException)
     async def _handle_http_exception(
         request: Request, exc: HTTPException
     ) -> JSONResponse:
+        correlation_id = getattr(request.state, 'correlation_id', 'N/A')
         level = logging.ERROR if exc.status_code >= 500 else logging.WARNING
-        logger.log(level, "HTTP %d: %s", exc.status_code, exc.detail)
+        logger.log(
+            level,
+            "HTTP error",
+            extra={
+                "correlation_id": correlation_id,
+                "status_code": exc.status_code,
+                "detail": exc.detail,
+                "path": request.url.path
+            }
+        )
+        # Use a consistent ErrorResponse model
         payload = ErrorResponse(
             detail=exc.detail,
             code=f"HTTP_{exc.status_code}",
@@ -98,7 +117,15 @@ def _register_exception_handlers(app: FastAPI) -> None:
     async def _handle_unexpected_exception(
         request: Request, exc: Exception
     ) -> JSONResponse:
-        logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+        correlation_id = getattr(request.state, 'correlation_id', 'N/A')
+        logger.exception(
+            "Unhandled exception",
+            extra={
+                "correlation_id": correlation_id,
+                "path": request.url.path,
+                "method": request.method
+            }
+        )
         payload = ErrorResponse(
             detail="Internal server error",
             code="INTERNAL_SERVER_ERROR",
@@ -110,14 +137,56 @@ def _register_exception_handlers(app: FastAPI) -> None:
             content=_safe_serialize(payload),
         )
 
+# Use lifespan context manager for startup/shutdown logic
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan events (startup/shutdown)."""
+    # Startup
+    logger.info("Starting %s v%s", settings.app_name, settings.version)
+    
+    # Initialize services
+    validation = ValidationService()
+    gemini = GeminiService(
+        gemini_settings=settings.gemini,
+        google_settings=settings.google_cloud,
+        validation_service=validation,
+    )
+    processor = ReviewProcessor(
+        llm_service=gemini,
+        settings=settings.processing,
+    )
+    
+    # Initialize Freshdesk Service
+    freshdesk = None
+    try:
+        # Ensure Freshdesk settings are loaded in your main settings object
+        # Check for settings.freshdesk and settings.freshdesk.api_key
+        if hasattr(settings, 'freshdesk') and settings.freshdesk and hasattr(settings.freshdesk, 'api_key') and settings.freshdesk.api_key:
+            freshdesk = FreshdeskService(settings=settings.freshdesk)
+            logger.info("Freshdesk service initialized.")
+        else:
+            logger.warning("Freshdesk settings not found or API key missing in config. Freshdesk service not initialized.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Freshdesk service: {e}", exc_info=True)
+        # Decide if this should prevent startup in production
+        # if settings.is_production_environment: raise
+
+    # Add services to application state
+    app.state.validation_service = validation
+    app.state.gemini_service = gemini
+    app.state.processor = processor
+    app.state.freshdesk_service = freshdesk # Store even if None
+    # app.state.metrics = metrics # If using metrics
+    
+    yield  # Application runs here
+    
+    # Shutdown logic (if any)
+    logger.info("Shutting down %s", settings.app_name)
+    # Add cleanup for services if needed (e.g., closing connections)
 
 def create_app() -> FastAPI:
     """
-    Construct and configure the FastAPI application:
-    - CORS middleware
-    - Exception handlers
-    - Startup service‐initialization
-    - Mounting live routes
+    Construct and configure the FastAPI application.
     """
     app = FastAPI(
         title=settings.app_name,
@@ -126,37 +195,48 @@ def create_app() -> FastAPI:
         docs_url="/docs" if settings.environment != "production" else None,
         redoc_url="/redoc" if settings.environment != "production" else None,
         openapi_url="/openapi.json" if settings.environment != "production" else None,
+        lifespan=lifespan, # Use the lifespan context manager
     )
 
+    # Add CORS middleware (ensure settings.cors_origins is defined)
+    if hasattr(settings, 'cors_origins') and settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    else:
+        logger.warning("CORS origins not configured. Allowing all origins for development.")
+        # Default permissive CORS for development if not specified
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"], 
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
-    # Exception handlers
+    # Add correlation ID middleware
+    @app.middleware("http")
+    async def add_correlation_id(request: Request, call_next):
+        correlation_id = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
+        request.state.correlation_id = correlation_id
+        response = await call_next(request)
+        response.headers["X-Correlation-ID"] = correlation_id
+        return response
+
+    # Register exception handlers
     _register_exception_handlers(app)
 
-    # Initialize shared services on startup
-    @app.on_event("startup")
-    async def _startup() -> None:
-        logger.info("Starting %s v%s", settings.app_name, settings.version)
-        validation = ValidationService()
-        gemini     = GeminiService(
-            gemini_settings=settings.gemini,
-            google_settings=settings.google_cloud,
-            validation_service=validation,
-        )
-        processor  = ReviewProcessor(
-            llm_service=gemini,
-            settings=settings.processing,
-        )
-
-        app.state.validation_service = validation
-        app.state.gemini_service     = gemini
-        app.state.processor          = processor
-
+    # Include API routers
     app.include_router(main_router)
 
     return app
 
-
 app = create_app()
+
 def start(
     host: str | None = None,
     port: int | None = None,
@@ -165,20 +245,22 @@ def start(
     log_level: str | None = None
 ) -> None:
     """
-    Console‐script entrypoint for `poetry run sentiment-api` or `python -m customer_sentiment_hub server`.
+    Console‐script entrypoint.
     Launches Uvicorn on our `app` instance.
     """
     import uvicorn
 
     # Resolve defaults from settings
-    actual_host   = host or settings.host
-    actual_port   = port or settings.port
-    actual_reload = reload if settings.debug else False
-    actual_log    = (log_level or settings.log_level).lower()
+    actual_host = host or settings.host
+    actual_port = port or settings.port
+    # Ensure reload is False if not in debug mode
+    actual_reload = reload and settings.debug 
+    # Use the same log level determination as above
+    actual_log = (log_level or log_level_to_use).lower()
 
     logger.info(
-        "Starting HTTP API on %s:%d (reload=%s) → log_level=%s",
-        actual_host, actual_port, actual_reload, actual_log
+        "Starting HTTP API on %s:%d (reload=%s, workers=%d) → log_level=%s",
+        actual_host, actual_port, actual_reload, workers, actual_log
     )
     uvicorn.run(
         "customer_sentiment_hub.api.app:app",
@@ -188,3 +270,4 @@ def start(
         log_level=actual_log,
         workers=workers,
     )
+
