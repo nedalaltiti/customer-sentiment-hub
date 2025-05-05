@@ -85,6 +85,7 @@ class Review(BaseModel):
     
     review_id: str = Field(description="A unique identifier for the review")
     text: str = Field(description="The full text of the review")
+    language: str = Field(default="unknown", description="Detected language code (e.g., 'en', 'fr', 'es')")
     labels: List[Label] = Field(description="The list of labels for this review")
     
     model_config = ConfigDict(

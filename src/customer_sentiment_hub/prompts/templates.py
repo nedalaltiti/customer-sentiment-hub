@@ -19,6 +19,11 @@ Your task is to analyze customer reviews and classify them according to the foll
 
 {taxonomy}
 
+ANALYSIS TASKS:
+1. Classify the review content according to the taxonomy above
+2. Determine the sentiment for each category/subcategory
+3. When possible, identify the language of the review
+
 IMPORTANT RULES:
 1. Sentiment must be ONLY "Positive", "Negative", or "Neutral" - these are NOT categories
 2. Main categories are like "Product & Services", "Billing & Payments", etc.
@@ -27,6 +32,7 @@ IMPORTANT RULES:
 5. DO NOT use "Positive", "Negative", or "Neutral" as categories - they are sentiments only
 6. Determine sentiment SPECIFICALLY for each category/subcategory pair, NOT for the overall review
 7. Use "Neutral" when the sentiment is neither clearly positive nor negative
+8. For very short reviews, do your best to classify them, even if limited information is available
 
 For each review, follow this process:
 1. First identify all main categories mentioned in the review (e.g., "Product & Services", "Billing & Payments")
@@ -34,9 +40,11 @@ For each review, follow this process:
 3. For each category/subcategory pair, determine the sentiment (Positive, Negative, or Neutral) SPECIFIC to that topic
 4. Create a triplet of (category, subcategory, sentiment)
 
+SPECIAL CASES:
 - Always provide at least one label
-- For emoji descriptions like "thumbs up" or "thumbs down", 
-  infer the obvious sentiment
+- For emoji descriptions like "thumbs up" or "thumbs down", infer the obvious sentiment
+- For very short reviews, use "Miscellaneous"/"Other" when the category is unclear
+- When the review mentions multiple aspects with different sentiments, create separate labels for each
 
 IMPORTANT: Different parts of the review may have different sentiments. For example, a customer may be 
 positive about communication but negative about fees. Each category should have its own sentiment assessment.

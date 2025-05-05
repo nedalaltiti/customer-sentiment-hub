@@ -10,7 +10,7 @@ logging, and mounts API endpoints.
 import json
 import logging
 import time
-import uuid # Added for correlation ID
+import uuid 
 from datetime import datetime
 from typing import Any, Dict
 from contextlib import asynccontextmanager # Use lifespan for modern FastAPI
@@ -168,8 +168,7 @@ async def lifespan(app: FastAPI):
             logger.warning("Freshdesk settings not found or API key missing in config. Freshdesk service not initialized.")
     except Exception as e:
         logger.error(f"Failed to initialize Freshdesk service: {e}", exc_info=True)
-        # Decide if this should prevent startup in production
-        # if settings.is_production_environment: raise
+        
 
     # Add services to application state
     app.state.validation_service = validation

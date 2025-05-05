@@ -1,3 +1,6 @@
+<!-- customer_sentiment_hub/src/customer_sentiment_hub/templates/freshdesk_note_template.html -->
+ 
+
 <!DOCTYPE html>
 <html>
 <head>
@@ -118,12 +121,26 @@
     <!-- Summary statistics -->
     <div class="summary">
       <p>
-        <strong>Summary:</strong> 
-        {{ analysis.labels | selectattr("sentiment", "equalto", "Positive") | list | length }} positive,
-        {{ analysis.labels | selectattr("sentiment", "equalto", "Negative") | list | length }} negative,
-        {{ analysis.labels | selectattr("sentiment", "equalto", "Neutral") | list | length }} neutral
+        <strong>Language:</strong>
+        <span style="
+          padding: 2px 8px;
+          background-color: #f0f0f0;
+          border-radius: 3px;
+          font-weight: bold;
+          color: #333;">
+          {{ analysis.language | default('Unknown') | upper }}
+        </span>
+    
+        <br />
+    
+        <!-- Sentiment counts -->
+        <strong>Summary:</strong>
+        {{ analysis.labels | selectattr('sentiment', 'equalto', 'Positive') | list | length }} positive,
+        {{ analysis.labels | selectattr('sentiment', 'equalto', 'Negative') | list | length }} negative,
+        {{ analysis.labels | selectattr('sentiment', 'equalto', 'Neutral')  | list | length }} neutral
       </p>
     </div>
+    
     
     <table>
       <thead>

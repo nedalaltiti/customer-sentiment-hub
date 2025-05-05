@@ -2,6 +2,7 @@
 
 import logging
 from typing import Dict, List, Optional
+from langdetect import detect, LangDetectException
 
 from google.cloud import aiplatform
 from langchain_google_vertexai import ChatVertexAI
@@ -201,6 +202,29 @@ class GeminiService(LLMService):
                 "subcategory": "Other"
             }]
         return review
+    
+    def _detect_language(self, text: str) -> str:
+        """
+        Detect the language of the review text.
+
+        Args:
+            text: The review text to analyze
+
+        Returns:
+            str: ISO 639-1 language code (e.g., 'en', 'fr', 'es') or 'unknown'
+        """
+        try:
+            language = detect(text)
+            logger.debug(f"Detected language: {language}")
+            return language
+        except LangDetectException:
+            logger.warning(f"Could not detect language for text: {text[:50]}...")
+            return "unknown"
+        except Exception as e:
+            logger.error(f"Error in language detection: {str(e)}")
+            return "unknown"
+
+    
 
     def _clean_results(self, results: Dict) -> Dict:
         """
@@ -222,5 +246,8 @@ class GeminiService(LLMService):
                     self.validation_service.validate_and_fix_label(lbl)
                     for lbl in review["labels"]
                 ]
+
+                if "language" not in review or not review["language"]:
+                    review["language"] = self._detect_language(review.get("text", ""))
     
         return results

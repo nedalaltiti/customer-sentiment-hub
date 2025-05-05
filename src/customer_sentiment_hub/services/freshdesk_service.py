@@ -258,7 +258,7 @@ class FreshdeskService:
         processed_reviews = analysis_result.value.get("reviews", [])
         if not processed_reviews:
              logger.warning(f"Analysis returned no processed reviews for ticket {ticket_id}.")
-             analysis_data = {"review_id": review_id, "review_text": clean_review_text, "labels": []}
+             analysis_data = {"review_id": review_id, "review_text": clean_review_text, "labels": [], "language": "unknown" }
         else:
             analysis_data = processed_reviews[0]
 
@@ -341,4 +341,3 @@ class FreshdeskService:
         except Exception as e:
             logger.exception(f"Error validating webhook signature: {str(e)}")
             return False
-
