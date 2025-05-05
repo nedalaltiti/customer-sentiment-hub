@@ -133,9 +133,7 @@ class GeminiService(LLMService):
             except Exception as e:
                 logger.warning(f"Error parsing response: {str(e)}")
                 
-                # Fallback: Try to extract JSON from the response
                 try:
-                    # Attempt to extract JSON from the response
                     import json
                     import re
                     
@@ -156,8 +154,7 @@ class GeminiService(LLMService):
                         else:
                             raise ValueError("Could not extract JSON from response")
                     
-                    # If parsing succeeded but structure doesn't match expected output,
-                    # try to restructure it
+                   
                     if "reviews" not in parsed_json:
                         restructured = {"reviews": []}
                         
@@ -194,6 +191,17 @@ class GeminiService(LLMService):
             logger.error(error_msg)
             return Error(error_msg)
     
+
+    def _ensure_at_least_one_label(self, review: Dict) -> Dict:
+        """Guarantee each review has ≥1 label; inject Misc/Other if empty."""
+        if not review.get("labels"):
+            text = review.get("text", "")
+            review["labels"] = [{
+                "category": "Miscellaneous",
+                "subcategory": "Other"
+            }]
+        return review
+
     def _clean_results(self, results: Dict) -> Dict:
         """
         Clean and validate the results.
@@ -206,11 +214,13 @@ class GeminiService(LLMService):
         """
         if "reviews" in results:
             for review in results["reviews"]:
-                if "labels" in review:
-                    fixed_labels = []
-                    for label in review["labels"]:
-                        fixed_label = self.validation_service.validate_and_fix_label(label)
-                        fixed_labels.append(fixed_label)
-                    review["labels"] = fixed_labels
-        
+                # 1) guarantee ≥1 label
+                self._ensure_at_least_one_label(review)
+    
+                # 2) validate / fix every label
+                review["labels"] = [
+                    self.validation_service.validate_and_fix_label(lbl)
+                    for lbl in review["labels"]
+                ]
+    
         return results

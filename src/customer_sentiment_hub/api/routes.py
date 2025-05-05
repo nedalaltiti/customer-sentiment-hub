@@ -18,16 +18,13 @@ from customer_sentiment_hub.domain.validation import ValidationService
 from customer_sentiment_hub.services.freshdesk_service import FreshdeskService
 
 from customer_sentiment_hub.config.settings import settings
-# Optional: Import webhook validation dependency if implemented
-# from .security import validate_freshdesk_webhook_signature 
+
 
 logger = logging.getLogger("customer_sentiment_hub")
 
-# Determine API prefix from settings
 api_prefix = settings.api_version
 main_router = APIRouter(prefix=f"/{api_prefix}")
 
-# --- Dependency Injection Helpers --- 
 
 def get_processor(request: Request) -> ReviewProcessor:
     """Injects the ReviewProcessor from application state."""
@@ -80,11 +77,7 @@ async def health_check(gemini_service: GeminiService = Depends(get_gemini_servic
     """Check connectivity to dependencies (e.g., Gemini) and report health."""
     deps = {}
     try:
-        # Assuming gemini_service has a method to test connection or perform a lightweight check
-        # await gemini_service.test_connection() # If such a method exists
-        # For now, assume if service initialized, dependency is potentially available
-        deps["gemini_api"] = "available" # Placeholder - enhance with actual check
-        # Add checks for other critical dependencies like Redis if used
+        deps["gemini_api"] = "available" 
     except Exception as e:
         logger.exception("Gemini health check failed during endpoint call")
         deps["gemini_api"] = "unavailable"
@@ -109,9 +102,8 @@ async def health_check(gemini_service: GeminiService = Depends(get_gemini_servic
         500: {"model": ErrorResponse, "description": "Internal server error during analysis"},
         502: {"model": ErrorResponse, "description": "Upstream service (e.g., LLM) error"},
     },
-    # Add security dependencies if needed (API Key, Rate Limiting)
-    # dependencies=[Depends(validate_api_key), Depends(RateLimiter(...))]
 )
+
 async def analyze_reviews(
     review_request: ReviewRequest,
     processor: ReviewProcessor = Depends(get_processor),
@@ -119,35 +111,27 @@ async def analyze_reviews(
     """Analyze a batch of reviews and return their labels + sentiment."""
     start_time = time.time()
     
-    # Convert ReviewInput objects to Optionalionaries for the processor
-    review_Optionals = [
-        {"review_id": review.review_id, "review_text": review.review_text}
-        for review in review_request.reviews
-    ]
+    review_texts = [r.review_text for r in review_request.reviews]
+    review_ids   = [r.review_id  for r in review_request.reviews]
     
-    logger.info(f"Received /analyze request for {len(review_Optionals)} reviews.")
-    
+    logger.info(f"Received /analyze request for {len(review_texts)} reviews.")
+
+        
     try:
-        # Use process_api_reviews as it handles the Optional format and API structure
-        result = await processor.process_api_reviews(review_Optionals)
+        result = await processor.process_reviews(review_texts, review_ids)
 
         if not result.is_success():
             logger.error(f"Review processing failed: {result.error}")
-            # Distinguish between internal errors and upstream errors if possible
             raise HTTPException(status_code=502, detail=f"Analysis backend error: {result.error}")
 
-        # Ensure the response structure matches ReviewResponse (which uses internal Review schema)
-        # If ReviewResponse used ReviewResponseItem, you might need transformation here.
         response_data = result.value 
 
         elapsed = time.time() - start_time
-        logger.info(f"Successfully processed {len(review_Optionals)} reviews in {elapsed:.2f}s")
+        logger.info(f"Successfully processed {len(review_texts)} reviews in {elapsed:.2f}s")
         
-        # Directly return the Optionalionary if it matches the ReviewResponse structure
-        # Pydantic will validate it. Ensure Review schema includes language if added.
         return response_data 
 
-    except HTTPException: # Re-raise HTTPExceptions (like 502 above)
+    except HTTPException: 
         raise
     except Exception as e:
         logger.exception("Unexpected error during /analyze request")
@@ -168,7 +152,6 @@ async def validate_freshdesk_signature(request: Request, webhook_secret: Optiona
     Returns:
         bool: True if signature is valid or if no secret is configured (development mode)
     """
-    # Skip validation if no webhook secret is configured (development mode)
     if not webhook_secret:
         logger.warning("Webhook signature validation skipped: No webhook_secret configured")
         return True
@@ -338,31 +321,3 @@ async def handle_freshdesk_webhook(
     except Exception as e:
         logger.exception(f"Error processing webhook: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing webhook: {str(e)}")
-
-
-# --- Optional: Webhook Signature Validation Dependency --- 
-# async def validate_freshdesk_webhook_signature(request: Request):
-#     """Validates the signature of the incoming Freshdesk webhook."""
-#     # Implement signature validation based on Freshdesk documentation
-#     # using a shared secret configured in Freshdesk and your app settings.
-#     # If validation fails, raise HTTPException(status_code=403, detail="Invalid signature")
-#     # Example using standard hmac:
-#     # import hmac
-#     # import hashlib
-#     # try:
-#     #     received_signature = request.headers["x-freshdesk-webhook-signature"]
-#     #     shared_secret = settings.freshdesk.webhook_secret # Get secret from settings
-#     #     body = await request.body()
-#     #     calculated_signature = hmac.new(shared_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-#     #     if not hmac.compare_digest(calculated_signature, received_signature):
-#     #         logger.warning("Invalid Freshdesk webhook signature received.")
-#     #         raise HTTPException(status_code=403, detail="Invalid signature")
-#     #     logger.debug("Freshdesk webhook signature validated successfully.")
-#     # except KeyError:
-#     #     logger.error("Freshdesk webhook signature header missing.")
-#     #     raise HTTPException(status_code=403, detail="Signature header missing")
-#     # except Exception as e:
-#     #     logger.exception("Error during webhook signature validation.")
-#     #     raise HTTPException(status_code=500, detail="Error validating signature")
-#     pass
-

@@ -34,6 +34,10 @@ For each review, follow this process:
 3. For each category/subcategory pair, determine the sentiment (Positive, Negative, or Neutral) SPECIFIC to that topic
 4. Create a triplet of (category, subcategory, sentiment)
 
+- Always provide at least one label
+- For emoji descriptions like "thumbs up" or "thumbs down", 
+  infer the obvious sentiment
+
 IMPORTANT: Different parts of the review may have different sentiments. For example, a customer may be 
 positive about communication but negative about fees. Each category should have its own sentiment assessment.
 
