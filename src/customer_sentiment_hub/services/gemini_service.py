@@ -247,7 +247,11 @@ class GeminiService(LLMService):
                     for lbl in review["labels"]
                 ]
 
-                if "language" not in review or not review["language"]:
+                if (
+                    "language" not in review
+                    or not review["language"]
+                    or str(review["language"]).lower() == "unknown"
+                ):
                     review["language"] = self._detect_language(review.get("text", ""))
     
         return results

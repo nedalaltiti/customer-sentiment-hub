@@ -16,12 +16,11 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape, TemplateNot
 
 from customer_sentiment_hub.utils.result import Result, Success, Error
 from customer_sentiment_hub.services.processor import ReviewProcessor
-# Import the final payload model structure
 from customer_sentiment_hub.api.models import FreshdeskWebhookPayload 
+from customer_sentiment_hub.config.settings import (settings, FreshdeskSettings)
 
 logger = logging.getLogger(__name__)
 
-# --- Jinja2 Template Setup ---
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 try:
     jinja_env = Environment(
@@ -38,38 +37,45 @@ except Exception as e:
     freshdesk_note_template = None
     logger.error(f"Error initializing Jinja2 environment: {e}", exc_info=True)
     logger.warning("Notes will use basic formatting due to Jinja2 error.")
-# -----------------------------
-
-class FreshdeskSettings(BaseModel):
-    """Settings for Freshdesk integration."""
-    api_key: str
-    domain: str
-    webhook_secret: Optional[str] = None
 
 class FreshdeskService:
-    """Service for interacting with Freshdesk API."""
+    """Service for interacting with the Freshdesk REST API."""
 
-    def __init__(self, settings: Optional[FreshdeskSettings] = None):
-        self.settings = settings
-        if settings and settings.api_key and settings.domain:
-            domain = settings.domain
-            if domain.startswith("http://") or domain.startswith("https://"):
-                domain = domain.split("//")[1]
-            domain = domain.rstrip("/")
-            if ".freshdesk.com" in domain:
-                domain = domain.split(".freshdesk.com")[0]
-                
-            self.base_url = f"https://{domain}.freshdesk.com/api/v2"
-            self.auth = aiohttp.BasicAuth(settings.api_key, password="X")
-            self.active = True
-            logger.info(f"Initialized Freshdesk service for domain \'{domain}\' using API v2")
-        else:
-            self.active = False
-            reason = "missing settings" if not settings else "missing api_key or domain"
-            logger.warning(f"Freshdesk service initialized with {reason} - service is inactive")
-    
-    def _check_active(self) -> Result:
-        if not self.active:
+    def __init__(self, cfg: Optional[FreshdeskSettings] = None) -> None:
+        """
+        Parameters
+        ----------
+        cfg : FreshdeskSettings | None
+            Injected config (useful for tests). Defaults to global `settings.freshdesk`.
+        """
+        self.cfg: FreshdeskSettings = cfg or settings.freshdesk
+
+        if not self.cfg.is_configured:
+            self._active = False
+            logger.warning(
+                "FreshdeskService inactive – missing API key or domain "
+                "(api_key=%s, domain=%s)",
+                bool(self.cfg.api_key), bool(self.cfg.domain)
+            )
+            return
+
+        # Build base URL
+        self.base_url: str = (
+            f"https://{self.cfg.sanitised_domain}.freshdesk.com/api/v2"
+        )
+        self.auth = aiohttp.BasicAuth(self.cfg.api_key, password="X")
+        self.max_tag_len: int = self.cfg.max_tag_len   # expose for _clean_tag
+        self._active = True
+
+        logger.info(
+            "FreshdeskService ready (domain=%s, max_tag_len=%s)",
+            self.cfg.sanitised_domain, self.max_tag_len
+        )
+
+
+    def _check_active(self) -> Result[None]:
+        """Return Success / Error if service is (not) configured."""
+        if not self._active:
             return Error("Freshdesk service is not active - missing configuration")
         return Success(None)
     
@@ -144,6 +150,14 @@ class FreshdeskService:
         ]
         if clean_review_text:
             html_parts.append(f"<p><strong>Original Text:</strong><br>{clean_review_text}</p>")
+        if analysis and analysis.get("language"):
+            lang = analysis["language"].upper()
+            html_parts.append(
+                f'<p><strong>Language:</strong> '
+                f'<span style="display:inline-block; padding:2px 6px; '
+                f'background:#f0f0f0; border-radius:3px; '
+                f'font-weight:bold;">{lang}</span></p>'
+            )
         labels = analysis.get("labels", [])
         if labels:
             html_parts.append("<table border=\"1\" style=\"border-collapse: collapse; width: 100%; margin-top: 10px;\">")
@@ -174,20 +188,25 @@ class FreshdeskService:
         headers = {"Content-Type": "application/json"}
 
         labels = analysis.get("labels", [])
-        tags = set()
+        # tags = set()
+        def _clean_tag(raw: str) -> str:
+            cleaned = raw.replace(" ", "_").replace("&", "and").lower()
+            if len(cleaned) > self.cfg.max_tag_len:
+                logger.debug("Trimming tag '%s' → '%s'", cleaned, cleaned[: self.cfg.max_tag_len])
+            return cleaned[: self.cfg.max_tag_len]
+
+
+        tags: set[str] = set()
         for label in labels:
             category = label.get("category", "")
             subcategory = label.get("subcategory", "")
             sentiment = label.get("sentiment", "")
             if category:
-                clean_category = category.replace(" ", "_").replace("&", "and").lower()
-                tags.add(f"cat_{clean_category}")
+                tags.add(_clean_tag(f"cat_{category}"))
             if subcategory:
-                clean_subcategory = subcategory.replace(" ", "_").replace("&", "and").lower()
-                tags.add(f"sub_{clean_subcategory}")
+                tags.add(_clean_tag(f"sub_{subcategory}"))
             if sentiment:
-                clean_sentiment = sentiment.lower()
-                tags.add(f"sent_{clean_sentiment}")
+                tags.add(_clean_tag(f"sent_{sentiment}"))
 
         update_payload = {"tags": list(tags)}
 

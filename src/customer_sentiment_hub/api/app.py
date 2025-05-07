@@ -162,7 +162,7 @@ async def lifespan(app: FastAPI):
         # Ensure Freshdesk settings are loaded in your main settings object
         # Check for settings.freshdesk and settings.freshdesk.api_key
         if hasattr(settings, 'freshdesk') and settings.freshdesk and hasattr(settings.freshdesk, 'api_key') and settings.freshdesk.api_key:
-            freshdesk = FreshdeskService(settings=settings.freshdesk)
+            freshdesk = FreshdeskService(settings.freshdesk)
             logger.info("Freshdesk service initialized.")
         else:
             logger.warning("Freshdesk settings not found or API key missing in config. Freshdesk service not initialized.")
