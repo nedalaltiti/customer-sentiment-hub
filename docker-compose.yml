@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: customer-sentiment-hub:latest
+    container_name: customer-sentiment-hub-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - APP_NAME=Customer Sentiment Hub API
+      - DEBUG=true
+      - LOG_LEVEL=INFO
+      - GOOGLE_CLOUD_PROJECT=gemini-deployment
+      - GOOGLE_CLOUD_LOCATION=us-central1
+      - SKIP_CLOUD_RESOURCE_VALIDATION=true
+      - AWS_REGION=us-west-1
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_SECRET_NAME=genai-gemini-vertex-prod-api
+      - GEMINI_MODEL_NAME=gemini-2.0-flash-001
+      - GEMINI_TEMPERATURE=0
+      - GEMINI_MAX_OUTPUT_TOKENS=1024
+      - PROCESSING_BATCH_SIZE=5
+      - PROCESSING_CONFIDENCE_THRESHOLD=0.6
+      - API_VERSION=v1
+
+    depends_on:
+      - redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"     # optional for host access
+      
+    volumes:
+      - ~/.aws:/root/.aws:ro
+      - ./logs:/app/logs
+      
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+
