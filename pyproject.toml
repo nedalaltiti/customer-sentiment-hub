@@ -2,7 +2,7 @@
 name = "customer-sentiment-hub"
 version = "0.1.0"
 description = "A modular system for analyzing customer sentiment in debt resolution reviews"
-authors = ["Nedal Altiti <nedal.a@usclarity.com>"]
+authors = ["Nedal Altiti <nedal.altiti@live.com>"]
 license = "MIT"
 readme = "README.md"
 packages = [{include = "customer_sentiment_hub", from = "src"}]
